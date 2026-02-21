@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//|  SpeedPanel.mq5  (1.97 - BID/ASK/SPREAD SEPARATED)               |
+//|  SpeedPanel.mq5  (1.98 - BugFix / Perf / Input improvements)    |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.97"
+#property version     "1.98"
 #property description "Scalp panel with Bid / Ask / Spread / AVG / P/L / Pips"
 
 #include <Trade\Trade.mqh>
@@ -16,10 +16,10 @@ input string EntrySound   = "alert.wav";
 input string ExitSound    = "alert2.wav";
 
 //=== ロット初期値 ==================================================
-double DefaultLots1 = 4;
-double DefaultLots2 = 2;
-double DefaultLots3 = 0.8;
-double DefaultLots4 = 0.4;
+input double DefaultLots1 = 4.0;
+input double DefaultLots2 = 2.0;
+input double DefaultLots3 = 0.8;
+input double DefaultLots4 = 0.4;
 
 // CLOSE ALL ボタン
 string CloseBtnText   = "CLOSE ALL";
@@ -71,8 +71,10 @@ int panelTop    = 0;
 int LabelColumnWidth = 120;
 
 //=== AVG キャッシュ ================================================
-double cachedAvgPrice = 0.0;
 bool   avgDirty       = true;
+
+//=== Pip係数（OnInitで初期化） =====================================
+double g_pipFactor = 1.0;
 
 //===================================================================
 // Forward Declarations
@@ -93,7 +95,8 @@ void CreatePanelBackground(string name,int x,int y,int w,int h,
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   trade.SetExpertMagicNumber((int)MagicNumber);
+   trade.SetExpertMagicNumber(MagicNumber);
+   g_pipFactor = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
    ObjectsDeleteAll(0, prefix);
 
    int infoBlockHeight =
@@ -198,8 +201,7 @@ void OnTick()
       ObjectSetString(0, prefix + "HDR_ASK",
                       OBJPROP_TEXT, ": " + DoubleToString(ask, _Digits));
 
-      double pipFactor  = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
-      double spreadPips = (ask - bid) / _Point / pipFactor;
+      double spreadPips = (ask - bid) / _Point / g_pipFactor;
 
       string spreadStr =
          DoubleToString(spreadPips, (MathAbs(spreadPips) < 0.1 ? 3 : 1));
@@ -208,7 +210,14 @@ void OnTick()
                       OBJPROP_TEXT, ": " + spreadStr);
    }
 
-   UpdatePositionStats();
+   // P/L変化があるときだけポジション統計を再計算（CPU負荷削減）
+   static double lastAccountProfit = DBL_MAX;
+   double curProfit = AccountInfoDouble(ACCOUNT_PROFIT);
+   if(MathAbs(curProfit - lastAccountProfit) > 0.001 || avgDirty)
+   {
+      lastAccountProfit = curProfit;
+      UpdatePositionStats();
+   }
 }
 
 
@@ -372,7 +381,7 @@ void UpdatePositionStats()
       long   type  = PositionGetInteger(POSITION_TYPE);
 
       totalVol    += vol;
-      if(avgDirty) totalCost += vol * price;
+      totalCost   += vol * price;
       totalProfit += pl;
       netLotsDir  += (type == POSITION_TYPE_BUY ? vol : -vol);
    }
@@ -388,7 +397,7 @@ void UpdatePositionStats()
    if(totalVol > 0.0)
    {
       double avgPrice = totalCost / totalVol;
-      cachedAvgPrice = avgPrice;
+      avgDirty = false;
 
       avgText = ": " + DoubleToString(avgPrice, _Digits);
       plText  = ": " + IntegerToString((int)MathRound(totalProfit));
@@ -401,11 +410,10 @@ void UpdatePositionStats()
              netLotsDir < 0.0 ? tick.ask :
              (tick.bid + tick.ask) / 2.0);
 
-         double pipFactor = (_Digits == 3 || _Digits == 5 ? 10.0 : 1.0);
-         double diff      = (cur - cachedAvgPrice);
-         double sign      = (netLotsDir >= 0.0 ? 1.0 : -1.0);
+         double diff = (cur - avgPrice);
+         double sign = (netLotsDir >= 0.0 ? 1.0 : -1.0);
 
-         pips    = diff / _Point / pipFactor * sign;
+         pips    = diff / _Point / g_pipFactor * sign;
          pipsText= ": " + DoubleToString(pips, 1);
          hasPips = true;
       }
@@ -450,8 +458,6 @@ void OpenPosition(bool isBuy,int index)
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
 
-   trade.SetExpertMagicNumber((int)MagicNumber);
-
    bool ok =
       (isBuy ?
          trade.Buy(volume, _Symbol, tick.ask, 0, 0, "UCP Buy") :
@@ -477,12 +483,20 @@ void CloseAllPositionsOfSymbol(string symbol)
       return;
    }
 
-   int count = 0;
+   ulong  tickets[];
+   double volumes[];
+   int    count = 0;
+
    for(int i = 0; i < total; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      ArrayResize(tickets, count + 1);
+      ArrayResize(volumes, count + 1);
+      tickets[count] = ticket;
+      volumes[count] = PositionGetDouble(POSITION_VOLUME);
       count++;
    }
 
@@ -490,24 +504,6 @@ void CloseAllPositionsOfSymbol(string symbol)
    {
       avgDirty = true;
       return;
-   }
-
-   ulong  tickets[];
-   double volumes[];
-
-   ArrayResize(tickets, count);
-   ArrayResize(volumes, count);
-
-   int idx = 0;
-   for(int i = 0; i < total; i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
-
-      tickets[idx] = ticket;
-      volumes[idx] = PositionGetDouble(POSITION_VOLUME);
-      idx++;
    }
 
    // --- ロット降順ソート ---
@@ -529,7 +525,6 @@ void CloseAllPositionsOfSymbol(string symbol)
    }
 
    // --- 非同期で一気にクローズを投げる ---
-   trade.SetExpertMagicNumber((int)MagicNumber);
    trade.SetAsyncMode(true);
 
    bool anyClosed = false;
