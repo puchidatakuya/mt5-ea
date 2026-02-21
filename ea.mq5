@@ -1,8 +1,8 @@
 //+------------------------------------------------------------------+
-//|  SpeedPanel.mq5  (1.98 - BugFix / Perf / Input improvements)    |
+//|  SpeedPanel.mq5  (1.97 - BID/ASK/SPREAD SEPARATED)               |
 //+------------------------------------------------------------------+
 #property strict
-#property version     "1.98"
+#property version     "1.97"
 #property description "Scalp panel with Bid / Ask / Spread / AVG / P/L / Pips"
 
 #include <Trade\Trade.mqh>
@@ -16,10 +16,10 @@ input string EntrySound   = "alert.wav";
 input string ExitSound    = "alert2.wav";
 
 //=== ロット初期値 ==================================================
-input double DefaultLots1 = 4.0;
-input double DefaultLots2 = 2.0;
-input double DefaultLots3 = 0.8;
-input double DefaultLots4 = 0.4;
+double DefaultLots1 = 4;
+double DefaultLots2 = 2;
+double DefaultLots3 = 0.8;
+double DefaultLots4 = 0.4;
 
 // CLOSE ALL ボタン
 string CloseBtnText   = "CLOSE ALL";
@@ -74,11 +74,6 @@ int LabelColumnWidth = 120;
 double cachedAvgPrice = 0.0;
 bool   avgDirty       = true;
 
-// Close All ショートカット: Ctrl+Shift+C（仮想キーコード）
-#define VK_CONTROL 0x11
-#define VK_SHIFT   0x10
-#define VK_C       0x43
-
 //===================================================================
 // Forward Declarations
 void UpdateLayout();
@@ -98,7 +93,7 @@ void CreatePanelBackground(string name,int x,int y,int w,int h,
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetExpertMagicNumber((int)MagicNumber);
    ObjectsDeleteAll(0, prefix);
 
    int infoBlockHeight =
@@ -213,14 +208,7 @@ void OnTick()
                       OBJPROP_TEXT, ": " + spreadStr);
    }
 
-   // P/L変化があるときだけポジション統計を再計算（CPU負荷削減）
-   static double lastAccountProfit = DBL_MAX;
-   double curProfit = AccountInfoDouble(ACCOUNT_PROFIT);
-   if(MathAbs(curProfit - lastAccountProfit) > 0.001 || avgDirty)
-   {
-      lastAccountProfit = curProfit;
-      UpdatePositionStats();
-   }
+   UpdatePositionStats();
 }
 
 
@@ -233,21 +221,6 @@ void OnChartEvent(const int id,const long &l,const double &d,const string &s)
    {
       UpdateLayout();
       ChartRedraw();
-      return;
-   }
-
-   // Close All ショートカット: Ctrl+Shift+C（Mac + Wine では Ctrl が届きやすい）
-   if(id == CHARTEVENT_KEYDOWN)
-   {
-      int vKey = (int)l;
-      bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-      bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
-      if(ctrl && shift && vKey == VK_C)
-      {
-         CloseAllPositionsOfSymbol(_Symbol);
-         UpdatePositionStats();
-         return;
-      }
       return;
    }
 
@@ -412,14 +385,10 @@ void UpdatePositionStats()
    color plColor   = clrText;
    color pipsColor = clrText;
 
-   if(totalVol <= 0.0)
-      cachedAvgPrice = 0.0;
-
    if(totalVol > 0.0)
    {
       double avgPrice = totalCost / totalVol;
       cachedAvgPrice = avgPrice;
-      avgDirty = false;
 
       avgText = ": " + DoubleToString(avgPrice, _Digits);
       plText  = ": " + IntegerToString((int)MathRound(totalProfit));
@@ -481,6 +450,8 @@ void OpenPosition(bool isBuy,int index)
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
 
+   trade.SetExpertMagicNumber((int)MagicNumber);
+
    bool ok =
       (isBuy ?
          trade.Buy(volume, _Symbol, tick.ask, 0, 0, "UCP Buy") :
@@ -506,7 +477,6 @@ void CloseAllPositionsOfSymbol(string symbol)
       return;
    }
 
-   // 同一シンボルの件数だけ先にカウント
    int count = 0;
    for(int i = 0; i < total; i++)
    {
@@ -524,6 +494,7 @@ void CloseAllPositionsOfSymbol(string symbol)
 
    ulong  tickets[];
    double volumes[];
+
    ArrayResize(tickets, count);
    ArrayResize(volumes, count);
 
@@ -533,6 +504,7 @@ void CloseAllPositionsOfSymbol(string symbol)
       ulong ticket = PositionGetTicket(i);
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
       tickets[idx] = ticket;
       volumes[idx] = PositionGetDouble(POSITION_VOLUME);
       idx++;
@@ -557,6 +529,7 @@ void CloseAllPositionsOfSymbol(string symbol)
    }
 
    // --- 非同期で一気にクローズを投げる ---
+   trade.SetExpertMagicNumber((int)MagicNumber);
    trade.SetAsyncMode(true);
 
    bool anyClosed = false;
