@@ -8,6 +8,10 @@
 #include <Trade\Trade.mqh>
 CTrade trade;
 
+#import "user32.dll"
+   short GetAsyncKeyState(int vKey);
+#import
+
 //=== Inputs ========================================================
 input int    PanelRightX  = 40;
 input int    PanelBottomY = 40;
@@ -77,9 +81,9 @@ bool   avgDirty       = true;
 double g_pipFactor = 1.0;
 
 //=== キーボードショートカット ======================================
-#define VK_CONTROL 0x11
-#define VK_SHIFT   0x10
-#define VK_C       0x43
+#define MY_VK_CONTROL 0x11
+#define MY_VK_SHIFT   0x10
+#define MY_VK_C       0x43
 
 //===================================================================
 // Forward Declarations
@@ -241,9 +245,9 @@ void OnChartEvent(const int id,const long &l,const double &d,const string &s)
    // Ctrl+Shift+C: Close All（Wine/Mac では物理Ctrlキーが VK_CONTROL に対応）
    if(id == CHARTEVENT_KEYDOWN)
    {
-      bool ctrl  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-      bool shift = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
-      if(ctrl && shift && (int)l == VK_C)
+      bool ctrl  = (GetAsyncKeyState(MY_VK_CONTROL) & 0x8000) != 0;
+      bool shift = (GetAsyncKeyState(MY_VK_SHIFT)   & 0x8000) != 0;
+      if(ctrl && shift && (int)l == MY_VK_C)
       {
          CloseAllPositionsOfSymbol(_Symbol);
          UpdatePositionStats();
